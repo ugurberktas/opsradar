@@ -8,13 +8,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN pip install --no-cache-dir --upgrade pip
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
 
 COPY app ./app
-COPY tests ./tests
 
-RUN mkdir -p /data
+RUN addgroup --system opsradar \
+    && adduser --system --ingroup opsradar opsradar \
+    && mkdir -p /data \
+    && chown -R opsradar:opsradar /data /app
+
+USER opsradar
 
 EXPOSE 8000
 

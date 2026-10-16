@@ -31,7 +31,7 @@ export function ErrorTrend({ data }: { data: Array<{ ts: string; count: number }
               />
               <YAxis tick={{ fontSize: 11, fill: "#64748b" }} />
               <Tooltip
-                contentStyle={{ border: "1px solid #e2e8f0", background: "#fff", color: "#0f172a" }}
+                contentStyle={{ border: "1px solid #334155", background: "#0f172a", color: "#f8fafc" }}
                 labelFormatter={(v) => new Date(v as string).getHours() + ":00"}
               />
               <Legend />

@@ -39,11 +39,11 @@ export function SeverityDonut({
                 {data.map((entry) => (
                   <Cell key={entry.name} fill={entry.color} />
                 ))}
-                <Tooltip
-                  contentStyle={{ border: "1px solid #e2e8f0", background: "#fff" }}
-                  formatter={(v) => `${v} incidents`}
-                />
               </Pie>
+              <Tooltip
+                contentStyle={{ border: "1px solid #334155", background: "#0f172a", color: "#f8fafc" }}
+                formatter={(value) => `${value} incidents`}
+              />
             </PieChart>
           </ResponsiveContainer>
         </div>

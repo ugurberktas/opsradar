@@ -3,10 +3,11 @@
 Fixed random seed makes every demo run identical unless a new seed is given.
 """
 
-import json
 import random
-from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from datetime import timedelta
+from typing import Any
+
+from app.time_utils import utc_now
 
 SERVICES = [
     {"name": "payment-api", "env": "production"},
@@ -88,16 +89,16 @@ INCIDENT_SCENARIOS = [
 ]
 
 
-def generate_events(seed: int = 42, total_events: int = 200) -> List[Dict[str, Any]]:
+def generate_events(seed: int = 42, total_events: int = 200) -> list[dict[str, Any]]:
     """Generate reproducible synthetic log events.
 
     Returns normalized events ready for insertion into the DB.
     """
     rng = random.Random(seed)
-    events: List[Dict[str, Any]] = []
-    now = datetime.utcnow()
+    events: list[dict[str, Any]] = []
+    now = utc_now()
 
-    for i in range(total_events):
+    for _ in range(total_events):
         service_entry = rng.choice(SERVICES)
         offset_minutes = rng.randint(0, 360)
         ts = now - timedelta(minutes=offset_minutes)

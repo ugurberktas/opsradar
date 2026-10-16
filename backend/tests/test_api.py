@@ -1,10 +1,8 @@
 """Tests for important REST endpoints using TestClient fixture."""
 
-from datetime import datetime
-from app.main import app
-from app.database import get_db
 import app.models as m
-from app import parsers, redact, simulation as sim_mod
+from app import parsers, redact
+from app import simulation as sim_mod
 
 
 def _seed(client_app_db):

@@ -1,7 +1,5 @@
-fastapi>=0.100,<0.115
-uvicorn[standard]>=0.24,<0.31
-sqlalchemy>=2.0,<2.1
-pydantic>=2.5,<3
-python-multipart>=0.0.6,<0.0.7
-pytest>=8
-httpx>=0.25
+-r requirements-prod.txt
+pytest==9.1.1
+httpx2==2.13.1
+ruff==0.17.1
+pip-audit==2.10.1

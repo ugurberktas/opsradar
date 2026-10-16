@@ -1,63 +1,38 @@
 """OpsRadar FastAPI application entry point."""
 
+import os
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import init_db
 from app import simulation as sim_mod
-from app.api import services as services_router
-from app.api import logs as logs_router
-from app.api import incidents as incidents_router
 from app.api import dashboard as dashboard_router
+from app.api import incidents as incidents_router
+from app.api import logs as logs_router
+from app.api import services as services_router
 from app.api import simulation as simulation_router
+from app.database import init_db
+from app.ingestion import ingest_events
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     # Seed sample simulation data automatically if DB is empty
+    from app import models
     from app.database import SessionLocal
-    from app import models, parsers
-    from app.detectors import detect_and_correlate
 
     db = SessionLocal()
     try:
-        if db.query(models.Service).count() == 0:
+        seed_demo = os.getenv("OPSRADAR_SEED_DEMO", "true").lower() in {"1", "true", "yes"}
+        if seed_demo and db.query(models.Service).count() == 0:
             events = sim_mod.generate_events(seed=42, total_events=200)
-            normalized = [parsers.normalize_event(e) for e in events]
-            from app import redact
-
-            for ev in normalized:
-                ev["message"] = redact.redact_text(ev["message"])
-                ev["raw"] = redact.redact_text(ev.get("raw") or "")
-
-            # upsert services
-            service_names = sorted({e["service"] for e in normalized})
-            service_objs = {}
-            for name in service_names:
-                env = next(e["environment"] for e in normalized if e["service"] == name)
-                svc = models.Service(name=name, environment=env, status="healthy")
-                db.add(svc)
-                service_objs[name] = svc
-            db.flush()
-
-            for ev in normalized:
-                svc = service_objs.get(ev["service"])
-                le = models.LogEvent(
-                    service_id=svc.id if svc else None,
-                    service=ev["service"],
-                    environment=ev["environment"],
-                    timestamp=ev["timestamp"],
-                    level=ev["level"],
-                    message=ev["message"],
-                    raw=ev["raw"],
-                    redacted=True,
-                )
-                db.add(le)
-            db.flush()
-            detect_and_correlate(db, normalized)
+            ingest_events(db, events)
             db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
     yield
@@ -70,12 +45,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "OPSRADAR_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Content-Type"],
 )
 
 app.include_router(services_router.router, prefix="/api")

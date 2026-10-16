@@ -1,6 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
+import { Incident } from "../lib/api";
 import { AlertCircle, Clock, List, Terminal } from "lucide-react";
 import { Button, Badge, Card, CardContent, CardHeader, CardTitle } from "../components/ui";
 import { formatRelativeTime, severityColor } from "../lib/utils";
@@ -8,18 +9,28 @@ import { formatRelativeTime, severityColor } from "../lib/utils";
 export function IncidentDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { incidents, acknowledgeIncident, resolveIncident } = useApp();
-  const [incident, setIncident] = useState<any>(null);
+  const { incidents, acknowledgeIncident, resolveIncident, loading } = useApp();
+  const [incident, setIncident] = useState<Incident | null>(null);
 
   useEffect(() => {
     const inc = incidents.find((i) => i.id === Number(id));
     if (inc) setIncident(inc);
   }, [incidents, id]);
 
-  if (!incident) {
+  if (!incident && loading.incidents) {
     return (
       <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
         Loading incident…
+      </div>
+    );
+  }
+
+  if (!incident) {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-muted-foreground">
+        <AlertCircle className="h-8 w-8" />
+        <p>Incident not found.</p>
+        <Button variant="outline" onClick={() => navigate("/incidents")}>Back to incidents</Button>
       </div>
     );
   }
@@ -63,10 +74,10 @@ export function IncidentDetail() {
           <div className="flex gap-2">
             {incident.status === "open" && (
               <>
-                <Button size="sm" onClick={() => acknowledgeIncident(incident.id)}>
+                <Button size="sm" onClick={() => void acknowledgeIncident(incident.id).catch(() => undefined)} disabled={loading[`incident-${incident.id}`]}>
                   Acknowledge
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => resolveIncident(incident.id)}>
+                <Button size="sm" variant="outline" onClick={() => void resolveIncident(incident.id).catch(() => undefined)} disabled={loading[`incident-${incident.id}`]}>
                   Resolve
                 </Button>
               </>

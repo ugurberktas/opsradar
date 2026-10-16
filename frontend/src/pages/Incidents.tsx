@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useApp } from "../lib/store";
 import { Play, Filter } from "lucide-react";
 import {
@@ -15,9 +15,13 @@ import { severityColor } from "../lib/utils";
 export function Incidents() {
   const { incidents, acknowledgeIncident, resolveIncident, loading, simulate } = useApp();
   const [statusFilter, setStatusFilter] = useState("");
+  const [searchParams] = useSearchParams();
+  const serviceFilter = searchParams.get("service") || "";
 
   const filtered = incidents.filter(
-    (i) => !statusFilter || i.status === statusFilter
+    (i) =>
+      (!statusFilter || i.status === statusFilter) &&
+      (!serviceFilter || i.service === serviceFilter)
   );
 
   return (
@@ -31,7 +35,7 @@ export function Incidents() {
         </div>
         <div className="flex gap-2">
           <Button
-            onClick={() => simulate()}
+            onClick={() => void simulate().catch(() => undefined)}
             disabled={loading.simulate}
             className="flex items-center gap-2"
           >
@@ -60,7 +64,7 @@ export function Incidents() {
                   </select>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  {filtered.length} incidents
+                  {filtered.length} incidents{serviceFilter ? ` for ${serviceFilter}` : ""}
                 </span>
               </div>
             </CardHeader>
@@ -135,7 +139,8 @@ export function Incidents() {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => acknowledgeIncident(inc.id)}
+                                  onClick={() => void acknowledgeIncident(inc.id).catch(() => undefined)}
+                                  disabled={loading[`incident-${inc.id}`]}
                                   className="mr-2 h-7 px-2 text-xs"
                                 >
                                   Acknowledge
@@ -143,7 +148,8 @@ export function Incidents() {
                                 <Button
                                   size="sm"
                                   variant="ghost"
-                                  onClick={() => resolveIncident(inc.id)}
+                                  onClick={() => void resolveIncident(inc.id).catch(() => undefined)}
+                                  disabled={loading[`incident-${inc.id}`]}
                                   className="h-7 px-2 text-xs"
                                 >
                                   Resolve

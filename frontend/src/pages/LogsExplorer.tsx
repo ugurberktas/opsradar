@@ -12,10 +12,11 @@ import {
 import { formatRelativeTime } from "../lib/utils";
 
 export function LogsExplorer() {
-  const { logs, loading } = useApp();
+  const { ingestFile, logs, loading } = useApp();
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState("");
   const [serviceFilter, setServiceFilter] = useState("");
+  const [uploadMessage, setUploadMessage] = useState("");
 
   const services = [...new Set(logs.map((l) => l.service))].sort();
 
@@ -31,15 +32,15 @@ export function LogsExplorer() {
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    const form = new FormData();
-    form.append("file", f);
-    const res = await fetch(`${import.meta.env.VITE_API_BASE || ""}/api/logs/ingest/file`, {
-      method: "POST",
-      body: form,
-    });
-    if (!res.ok) throw new Error("Upload failed");
-    const data = await res.json();
-    alert(`Ingested ${data.ingested} events`);
+    setUploadMessage("");
+    try {
+      const data = await ingestFile(f);
+      setUploadMessage(`Ingested ${data.ingested} events; skipped ${data.skipped}.`);
+    } catch {
+      setUploadMessage("Upload failed. Check the error message above and verify the JSONL file.");
+    } finally {
+      e.target.value = "";
+    }
   };
 
   return (
@@ -52,7 +53,10 @@ export function LogsExplorer() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button onClick={() => (document.getElementById("file-input") as HTMLInputElement).click()}>
+          <Button
+            onClick={() => (document.getElementById("file-input") as HTMLInputElement).click()}
+            disabled={loading.ingest}
+          >
             <Upload className="w-4 h-4 mr-2" /> Upload JSONL
           </Button>
           <input
@@ -64,6 +68,12 @@ export function LogsExplorer() {
           />
         </div>
       </div>
+
+      {uploadMessage && (
+        <p role="status" className="rounded-lg border bg-card px-4 py-3 text-sm text-muted-foreground">
+          {uploadMessage}
+        </p>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-3">

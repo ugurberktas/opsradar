@@ -1,6 +1,6 @@
 """Tests for sensitive-data redaction."""
 
-from app.redact import redact_text, is_sensitive
+from app.redact import is_sensitive, redact_text
 
 
 def test_redacts_password():
@@ -8,7 +8,7 @@ def test_redacts_password():
     out = redact_text(text)
     assert "supersecret123" not in out
     assert "***REDACTED***" in out
-    assert "password:" in out
+    assert "password=" in out
 
 
 def test_redacts_bearer_token():
@@ -30,3 +30,11 @@ def test_is_sensitive():
     assert is_sensitive("Bearer secrettoken") is True
     assert is_sensitive("just a normal message") is False
     assert is_sensitive("") is False
+
+
+def test_redacts_json_and_url_credentials():
+    text = '{"password": "correct-horse", "dsn": "postgres://admin:swordfish@db/app"}'
+    out = redact_text(text)
+    assert "correct-horse" not in out
+    assert "swordfish" not in out
+    assert out.count("***REDACTED***") == 2

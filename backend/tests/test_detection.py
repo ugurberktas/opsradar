@@ -1,7 +1,6 @@
 """Tests for rule-based incident detection and deduplication."""
 
-from datetime import datetime
-from app.detectors import detect_signature, signature_for, DETECTION_RULES
+from app.detectors import DETECTION_RULES, detect_signature, signature_for
 
 
 def test_detect_jdbc():

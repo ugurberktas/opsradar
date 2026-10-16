@@ -1,21 +1,19 @@
 """Incident management endpoints."""
 
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from typing import Literal
 
-from app.database import get_db
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import desc, func
+from sqlalchemy.orm import Session
+
 from app import models
+from app.database import get_db
 from app.schemas import IncidentOut, IncidentUpdate
 
 router = APIRouter(tags=["incidents"])
 
 
-def _to_schema(inc: models.Incident, db: Session) -> IncidentOut:
-    related = db.query(models.IncidentEvent).filter(
-        models.IncidentEvent.incident_id == inc.id
-    ).count()
+def _to_schema(inc: models.Incident, related: int) -> IncidentOut:
     return IncidentOut(
         id=inc.id,
         title=inc.title,
@@ -41,11 +39,12 @@ def _to_schema(inc: models.Incident, db: Session) -> IncidentOut:
     )
 
 
-@router.get("/incidents", response_model=List[IncidentOut])
+@router.get("/incidents", response_model=list[IncidentOut])
 def list_incidents(
-    status: Optional[str] = None,
-    severity: Optional[str] = None,
-    service: Optional[str] = None,
+    status: Literal["open", "acknowledged", "resolved"] | None = None,
+    severity: Literal["INFO", "WARNING", "CRITICAL"] | None = None,
+    service: str | None = Query(default=None, max_length=100),
+    limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     q = db.query(models.Incident).order_by(desc(models.Incident.last_seen))
@@ -55,32 +54,67 @@ def list_incidents(
         q = q.filter(models.Incident.severity == severity.upper())
     if service:
         q = q.filter(models.Incident.service.ilike(f"%{service}%"))
-    return [_to_schema(inc, db) for inc in q.all()]
+    incidents = q.limit(limit).all()
+    incident_ids = [incident.id for incident in incidents]
+    counts = {
+        row[0]: row[1]
+        for row in db.query(
+            models.IncidentEvent.incident_id,
+            func.count(models.IncidentEvent.id),
+        )
+        .filter(models.IncidentEvent.incident_id.in_(incident_ids))
+        .group_by(models.IncidentEvent.incident_id)
+        .all()
+    } if incident_ids else {}
+    return [_to_schema(incident, counts.get(incident.id, 0)) for incident in incidents]
 
 
 @router.get("/incidents/{incident_id}", response_model=IncidentOut)
 def get_incident(incident_id: int, db: Session = Depends(get_db)):
-    inc = db.query(models.Incident).get(incident_id)
+    inc = db.get(models.Incident, incident_id)
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
-    return _to_schema(inc, db)
+    related = db.query(models.IncidentEvent).filter(
+        models.IncidentEvent.incident_id == inc.id
+    ).count()
+    return _to_schema(inc, related)
 
 
 @router.patch("/incidents/{incident_id}", response_model=IncidentOut)
 def update_incident(
     incident_id: int, payload: IncidentUpdate, db: Session = Depends(get_db)
 ):
-    inc = db.query(models.Incident).get(incident_id)
+    inc = db.get(models.Incident, incident_id)
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
-    from datetime import datetime
+    allowed = {
+        "open": {"open", "acknowledged", "resolved"},
+        "acknowledged": {"acknowledged", "resolved"},
+        "resolved": {"resolved"},
+    }
+    if payload.status not in allowed[inc.status]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot transition incident from {inc.status} to {payload.status}",
+        )
 
-    if payload.status:
-        inc.status = payload.status
-        if payload.status == "acknowledged" and not inc.acknowledged_at:
-            inc.acknowledged_at = datetime.utcnow()
-        if payload.status == "resolved" and not inc.resolved_at:
-            inc.resolved_at = datetime.utcnow()
-    db.add(inc)
-    db.commit()
-    return _to_schema(inc, db)
+    from app.detectors import recompute_service_status
+    from app.time_utils import utc_now
+
+    inc.status = payload.status
+    if payload.status == "acknowledged" and not inc.acknowledged_at:
+        inc.acknowledged_at = utc_now()
+    if payload.status == "resolved" and not inc.resolved_at:
+        inc.resolved_at = utc_now()
+    try:
+        db.flush()
+        recompute_service_status(db, inc.service_id)
+        db.commit()
+        db.refresh(inc)
+    except Exception:
+        db.rollback()
+        raise
+    related = db.query(models.IncidentEvent).filter(
+        models.IncidentEvent.incident_id == inc.id
+    ).count()
+    return _to_schema(inc, related)

@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+from contextlib import suppress
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -11,8 +12,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-from app.database import Base, get_db  # noqa: E402
 import app.models  # noqa: F401  (registers models on Base.metadata)
+from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -43,10 +44,8 @@ def db_session():
         app.dependency_overrides.clear()
         Base.metadata.drop_all(bind=test_engine)
         test_engine.dispose()
-        try:
+        with suppress(OSError):
             os.unlink(path)
-        except OSError:
-            pass
 
 
 @pytest.fixture(scope="function")

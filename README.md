@@ -1,184 +1,270 @@
-# OpsRadar — SRE Incident & Log Intelligence Platform
+# OpsRadar
 
-A production-style, local-first web platform that helps DevOps and SRE engineers
-detect, investigate, correlate, and manage infrastructure incidents from
-application logs. No real Kubernetes cluster, Jenkins, or production access is
-required — everything runs on realistic synthetic data.
+OpsRadar is a local-first SRE incident and log intelligence dashboard. It ingests
+JSONL application logs, redacts common credentials before persistence, applies a
+deterministic rule engine, correlates related events into incidents, and supports
+acknowledgment and resolution workflows.
 
-> **Built for autonomous evaluation:** a single-prompt, full-stack TypeScript +
-> Python application with backend API, React frontend, SQLite persistence, rule-
-> based incident detection, simulation, tests, and Docker deployment.
+This repository is a portfolio and learning project. It demonstrates practical
+full-stack engineering patterns, but it is **not** presented as a deployed
+enterprise monitoring product.
 
----
+## Features
 
-## 🏗️ Architecture
+- Searchable log explorer with service and severity filters
+- JSON event ingestion and JSONL file upload with a 5 MiB limit
+- Rule-based detection for database, Redis, Kubernetes, OOM, HTTP 5xx, and
+  timeout symptoms
+- Fifteen-minute, service-and-environment-aware event correlation
+- Idempotent event ingestion and incident-event linking
+- Explicitly labeled potential root causes, confidence, investigation steps,
+  and manual remediation suggestions
+- Persistent incident acknowledgment and resolution
+- Service health derived from active incident severity
+- Synthetic, fictional demo data with deterministic scenario selection
+- Responsive dark/light monitoring dashboard
+- FastAPI OpenAPI documentation, Docker Compose, and automated CI
 
+No paid service or external AI API is required. The optional AI provider
+interface is disabled by default; incident detection and suggestions are
+rule-based.
+
+## Architecture
+
+```text
+Browser
+  │
+  ▼
+React + TypeScript + Vite
+  │  /api (Vite proxy locally, Nginx proxy in Docker)
+  ▼
+FastAPI routers
+  │
+  ├── ingestion: normalize → redact → deduplicate → persist
+  ├── detection: match rules → time-window correlation → incident lifecycle
+  └── queries: dashboard, logs, services, incidents
+  │
+  ▼
+SQLAlchemy + SQLite
 ```
-opsradar/
-├── backend/                 # Python + FastAPI (+ SQLAlchemy + SQLite)
-│   ├── app/
-│   │   ├── main.py          # App factory, lifespan, auto-seeding
-│   │   ├── database.py      # SQLAlchemy engine/session
-│   │   ├── models.py        # Service, LogEvent, Incident, IncidentEvent
-│   │   ├── schemas.py       # Pydantic v2 request/response schemas
-│   │   ├── redact.py        # Sensitive-data redaction (passwords, tokens, JWT)
-│   │   ├── parsers.py       # JSONL parsing + normalization
-│   │   ├── detectors.py     # Rule-based detection & correlation engine
-│   │   ├── simulation.py    # Reproducible synthetic log generator
-│   │   ├── ai_interface.py  # Optional, disabled-by-default AI provider iface
-│   │   └── api/             # REST routers (services, logs, incidents, dashboard, simulation)
-│   ├── tests/               # Pytest suite (parsing, redaction, detection, lifecycle, API)
-│   ├── Dockerfile
-│   └── requirements.txt
-├── frontend/                # React + TypeScript + Vite + Tailwind + Recharts
-│   ├── src/
-│   │   ├── lib/api.ts       # Axos API client
-│   │   ├── lib/store.ts     # React context state + data fetching
-│   │   ├── lib/utils.ts     # Formatters / severity colours
-│   │   ├── components/      # UI primitives + charts (ErrorTrend, SeverityDonut, ServiceHealth)
-│   │   ├── pages/           # Dashboard, LogsExplorer, Incidents, IncidentDetail, Services
-│   │   ├── App.tsx          # Routing (react-router-dom)
-│   │   └── tests/           # Vitest suite
-│   ├── Dockerfile
-│   ├── package.json
-│   └── vite.config.ts
-├── docker-compose.yml       # One-command full stack
-├── Makefile                 # Convenience targets
-└── .env.example
-```
 
-### Design decisions
-- **Local-first**: SQLite file database; no external services required.
-- **Deterministic detection**: rule-based engine (regex signatures, time-window
-  correlation, severity assignment). Root causes are labeled `speculative` /
-  `likely` and never presented as confirmed fact.
-- **Sensitive-data redaction**: passwords, tokens, API keys, Bearer auth headers
-  and JWTs are redacted **before** storage and display. No real credentials are
-  ever persisted.
-- **Reproducible simulation**: fixed random seed (`42`) generates identical demo
-  data every run; a "Simulate Incident" button creates new events through the
-  backend and mutates state.
-- **Separation of concerns**: frontend and backend are cleanly separated, type-
-  safe (TypeScript strict + Pydantic), with structured logging via stdlib.
+The backend owns normalization, validation, redaction, correlation, and
+persistence. The frontend context performs a single bounded initial load and
+exposes stable refresh and mutation actions. Route-level code splitting keeps
+the initial browser bundle focused.
 
----
+## Technology stack
 
-## 🚀 Quick Start
+| Area | Technology |
+| --- | --- |
+| Backend | Python 3.12, FastAPI, Pydantic, SQLAlchemy |
+| Database | SQLite |
+| Frontend | React, TypeScript, Vite, Tailwind CSS, Recharts |
+| Tests | Pytest, Vitest, Testing Library |
+| Quality | Ruff, TypeScript strict mode, npm audit, pip-audit |
+| Runtime | Docker Compose, Nginx |
 
-### Option A: Docker Compose (recommended)
+## Quick start with Docker
+
+Requirements: Docker Engine with Compose v2.
 
 ```bash
+git clone <your-repository-url>
 cd opsradar
 docker compose up --build
 ```
 
-Then open: **http://localhost:5173** (frontend) — the backend API is at
-**http://localhost:8000**.
+Open:
 
-### Option B: Manual (no Docker)
+- Dashboard: <http://localhost:5173>
+- API health: <http://localhost:8000/api/health>
+- Interactive API docs: <http://localhost:8000/docs>
 
-Backend:
+If either port is already in use:
+
+```bash
+OPSRADAR_FRONTEND_PORT=15173 OPSRADAR_BACKEND_PORT=18000 docker compose up --build
+```
+
+SQLite data is stored in the named `opsradar-data` volume. Stop the stack with
+`docker compose down`. That command preserves the volume.
+
+## Local development
+
+### Backend
+
 ```bash
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python3 -m uvicorn app.main:app --reload --port 8000
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
-Frontend (new terminal):
+The backend seeds fictional demo data only when the database is empty. Disable
+that behavior with `OPSRADAR_SEED_DEMO=false`.
+
+### Frontend
+
+In another terminal:
+
 ```bash
 cd frontend
-npm install
-npm run dev        # http://localhost:5173, proxies /api to backend
+npm ci
+npm run dev
 ```
 
-### One-command test run
+Vite serves <http://localhost:5173> and proxies `/api` to
+`http://127.0.0.1:8000`. Leave `VITE_API_BASE` blank for the supplied proxy,
+or set it to an explicit backend origin for a custom setup.
 
-```bash
-make backend-test   # pytest (backend)
-make frontend-test  # vitest (frontend)
-```
+Copy [`.env.example`](.env.example) to `.env` only when overrides are needed.
+Never commit the resulting file.
 
----
+## API overview
 
-## 📦 What works (verified)
+All application endpoints use the `/api` prefix.
 
-| Acceptance criterion | Status |
-|---|---|
-| Backend starts successfully | ✅ `uvicorn app.main:app` |
-| Frontend starts successfully | ✅ `vite` dev server + production build |
-| Database initializes automatically | ✅ SQLAlchemy `create_all` on lifespan |
-| Sample data generated | ✅ 200 synthetic events, 6 services, auto-seeded on startup |
-| Dashboard displays real backend data | ✅ `/api/dashboard` returns live stats |
-| Incident detection produces results | ✅ JDBC, Redis, CrashLoopBackOff, HTTP 5xx, OOM, timeouts |
-| Simulation changes application state | ✅ `/api/simulate` inserts events + runs detection |
-| Ack/resolve persist | ✅ SQLite, status transitions tested |
-| Automated tests pass | ✅ 23 backend + 7 frontend tests |
-| Docker Compose valid | ✅ `docker compose up --build` |
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/api/health` | Process health |
+| GET | `/api/dashboard` | Aggregated service, incident, event, and trend data |
+| GET | `/api/services` | Services with log and incident counts |
+| GET | `/api/logs` | Filtered logs; maximum 500 rows |
+| POST | `/api/logs/ingest` | Ingest 1–5,000 JSON event objects |
+| POST | `/api/logs/ingest/file` | Ingest a JSONL, log, or text file up to 5 MiB |
+| GET | `/api/incidents` | Filtered incidents; maximum 500 rows |
+| GET | `/api/incidents/{id}` | Incident detail |
+| PATCH | `/api/incidents/{id}` | Acknowledge or resolve an incident |
+| POST | `/api/simulate` | Generate synthetic events and run detection |
 
----
-
-## 🔌 API Overview
-
-Base path: `/api`
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/health` | GET | Health check |
-| `/services` | GET | List monitored services with log/incident counts |
-| `/dashboard` | GET | Aggregated stats: counts, severity/status distribution, error trend, service health, recent events |
-| `/logs` | GET | List/filter log events (`?service=`, `?level=`, `?search=`, `?limit=`) |
-| `/logs/ingest` | POST | Ingest parsed log event objects (`{ events: [...] }`) |
-| `/logs/ingest/file` | POST | Upload a JSONL log file (`multipart/form-data`) |
-| `/incidents` | GET | List incidents (`?status=`, `?severity=`, `?service=`) |
-| `/incidents/{id}` | GET | Single incident detail |
-| `/incidents/{id}` | PATCH | Acknowledge/resolve (`{ "status": "acknowledged\|resolved" }`) |
-| `/simulate` | POST | Generate synthetic incidents (`?seed=`, `?total_events=`) |
+FastAPI provides the complete request/response schema at
+<http://localhost:8000/docs> during local development.
 
 Example:
+
 ```bash
 curl http://localhost:8000/api/dashboard
-curl http://localhost:8000/api/incidents?severity=CRITICAL
-curl -X POST http://localhost:8000/api/simulate?seed=99&total_events=50
+curl -X POST 'http://localhost:8000/api/simulate?seed=99&total_events=50'
 ```
 
----
+## Detection and sample data
 
-## 🧪 Detection Scenarios
+Detection is deterministic. Rules match known log symptoms, assign a severity
+and confidence value, and group matching events by rule, service, environment,
+and a 15-minute window. HTTP 5xx and timeout warnings require repeated evidence
+to reduce single-event false positives. Exact duplicate events are skipped.
 
-The rule engine detects and correlates:
+Potential causes are hypotheses, not verified facts. The UI and API label them
+as `speculative` or `likely`; suggested commands are displayed for a human
+operator and are never executed automatically.
 
-1. **Database connection pool exhaustion** — `java.sql.SQLException`, HikariCP pool exhausted, `CommunicationsException`
-2. **Repeated JDBC connection errors** — connection refused on DB ports
-3. **Redis connectivity problems** — `redis.exceptions.ConnectionError`, `ECONNREFUSED`, `6379`
-4. **Kubernetes pod restart loops** — `CrashLoopBackOff`, `OOMKilled`
-5. **HTTP 5xx spikes after deployment** — `500/502/503` responses
-6. **Connection timeouts** — `Connection timed out`, `ReadTimeout`, `ConnectTimeout`
-7. **Out of memory** — `OutOfMemoryError`, `Java heap space`, `Cannot allocate memory`
+The simulator uses only fictional service names and synthetic log messages.
+The random seed controls scenario selection; timestamps are generated relative
+to the time of the run.
 
-Each detected incident records: first/last seen, event count, affected service,
-confidence score, a speculative root cause (labeled as such), investigation
-steps, and remediation actions. Duplicate identical errors are deduplicated by
-signature (`rule:service:environment`).
+## Testing and quality checks
 
----
+From the repository root:
 
-## 🔐 Security & Data Safety
+```bash
+make test
+make lint
+make build
+make audit
+```
 
-- Sensitive values (passwords, tokens, API keys, Bearer JWTs, Authorization
-  headers) are redacted to `***REDACTED***` **before** storage and before any
-  frontend display.
-- No real credentials, API keys, or production data are included or required.
-- The optional AI provider interface (`app/ai_interface.py`) is implemented as a
-  disabled-by-default stub that returns `None`; no LLM API key or network call
-  is wired in the default build.
+Equivalent direct commands:
 
----
+```bash
+cd backend
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check app tests
+.venv/bin/pip-audit -r requirements-prod.txt
 
-## 🧹 Project hygiene
+cd ../frontend
+npm test
+npm run build
+npm audit --audit-level=moderate
 
-- `make backend-test` — runs the full pytest suite.
-- `make frontend-test` — runs vitest.
-- `npm run build` (frontend) — type-checks (`tsc`) and bundles with Vite.
-- `docker compose up --build` — full-stack, single-command deployment.
-# opsradar
+cd ..
+docker compose config
+```
+
+GitHub Actions runs backend tests and linting, frontend tests and builds, both
+dependency audits, and Docker Compose validation.
+
+## Security and limitations
+
+- Redaction covers common password, token, API-key, Bearer/JWT, cloud-key, and
+  URL-embedded credential patterns before storage. Redaction is best-effort and
+  must not be treated as a data-loss-prevention boundary.
+- Upload suffixes and sizes are restricted; malformed JSONL lines are counted
+  as skipped instead of being persisted as incidents.
+- CORS defaults to local development origins and can be changed with
+  `OPSRADAR_CORS_ORIGINS`.
+- SQLite foreign keys and lock timeouts are enabled. SQLite remains appropriate
+  for a single-node demo, not a highly concurrent production deployment.
+- There is intentionally no authentication, authorization, TLS termination,
+  tenant isolation, retention policy, or audit log. Do not expose this demo to
+  an untrusted network.
+- The rule engine can produce false positives and false negatives. It does not
+  replace alert review or incident response judgment.
+- No real credentials, private logs, or proprietary infrastructure data belong
+  in this repository or demo database.
+
+See [SECURITY.md](SECURITY.md) for reporting guidance and the threat-model
+boundary.
+
+## Repository structure
+
+```text
+.
+├── .github/workflows/ci.yml
+├── backend/
+│   ├── app/
+│   │   ├── api/             # FastAPI route handlers
+│   │   ├── detectors.py     # Rules and time-window correlation
+│   │   ├── ingestion.py     # Shared ingestion transaction
+│   │   ├── parsers.py       # JSONL parsing and normalization
+│   │   ├── redact.py        # Sensitive-value redaction
+│   │   ├── models.py        # SQLAlchemy models
+│   │   └── main.py          # Application lifecycle and CORS
+│   ├── tests/
+│   ├── requirements-prod.txt
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── lib/
+│   │   ├── pages/
+│   │   └── tests/
+│   └── nginx.conf
+├── docker-compose.yml
+└── Makefile
+```
+
+## Screenshots
+
+The dashboard has been verified in mobile and desktop browser viewports. No
+image is referenced here until a stable repository screenshot is committed.
+To add one, run the Docker stack, capture the real dashboard at a desktop
+viewport, store it under `docs/screenshots/`, and then link that file from this
+section. Avoid mockups or screenshots containing real operational data.
+
+## Future improvements
+
+- Database migrations and PostgreSQL support
+- Cursor pagination for large log volumes
+- Structured rule configuration and operator-defined rules
+- Incident-event timeline payloads and richer drill-down views
+- Authentication and an append-only audit log for multi-user deployments
+- Retention controls, export, and OpenTelemetry ingestion
+- Browser-level end-to-end tests in CI
+
+## Contributing and license
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
+
+OpsRadar is available under the [MIT License](LICENSE).

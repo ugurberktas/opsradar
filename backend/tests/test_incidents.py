@@ -1,12 +1,14 @@
 """Tests for incident lifecycle: detection, dedup, acknowledge, resolve."""
 
-from datetime import datetime, timedelta
-from app.main import app
-from app.database import SessionLocal, Base, engine
+from datetime import timedelta
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.models as m
+from app.database import Base, SessionLocal
+from app.main import app
+from app.time_utils import utc_now
 
 
 def _make_session():
@@ -19,7 +21,7 @@ def _make_session():
 
 
 def _seed_logs(session):
-    now = datetime.utcnow()
+    now = utc_now()
     svc = m.Service(name="payment-api", environment="production", status="healthy")
     session.add(svc)
     session.flush()
@@ -43,7 +45,7 @@ def _seed_logs(session):
 def test_detection_creates_incident_and_links_logs():
     session = _make_session()
     try:
-        svc_id = _seed_logs(session)
+        _seed_logs(session)
         from app.detectors import detect_and_correlate
 
         events = (
@@ -75,7 +77,7 @@ def test_detection_creates_incident_and_links_logs():
         assert links == 5
 
         # Incident persisted
-        persisted = session.query(m.Incident).get(inc["id"])
+        persisted = session.get(m.Incident, inc["id"])
         assert persisted is not None
         assert persisted.status == "open"
     finally:
@@ -121,7 +123,7 @@ def test_deduplication_does_not_duplicate_open_incident():
 def test_acknowledge_and_resolve_lifecycle():
     session = _make_session()
     try:
-        svc_id = _seed_logs(session)
+        _seed_logs(session)
         from app.detectors import detect_and_correlate
 
         events = (
@@ -142,23 +144,22 @@ def test_acknowledge_and_resolve_lifecycle():
         result = detect_and_correlate(session, normalized)
         inc_id = result.incidents[0]["id"]
 
-        inc = session.query(m.Incident).get(inc_id)
+        inc = session.get(m.Incident, inc_id)
         inc.status = "acknowledged"
-        from datetime import datetime
-        inc.acknowledged_at = datetime.utcnow()
+        inc.acknowledged_at = utc_now()
         session.add(inc)
         session.commit()
 
-        assert session.query(m.Incident).get(inc_id).status == "acknowledged"
-        assert session.query(m.Incident).get(inc_id).acknowledged_at is not None
+        assert session.get(m.Incident, inc_id).status == "acknowledged"
+        assert session.get(m.Incident, inc_id).acknowledged_at is not None
 
         inc.status = "resolved"
-        inc.resolved_at = datetime.utcnow()
+        inc.resolved_at = utc_now()
         session.add(inc)
         session.commit()
 
-        assert session.query(m.Incident).get(inc_id).status == "resolved"
-        assert session.query(m.Incident).get(inc_id).resolved_at is not None
+        assert session.get(m.Incident, inc_id).status == "resolved"
+        assert session.get(m.Incident, inc_id).resolved_at is not None
     finally:
         session.close()
         app.dependency_overrides.clear()

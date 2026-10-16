@@ -1,30 +1,36 @@
 """Dashboard statistics endpoint."""
 
-from typing import Dict, List
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
 
-from app.database import get_db
+from fastapi import APIRouter, Depends
+from sqlalchemy import desc, func
+from sqlalchemy.orm import Session
+
 from app import models
+from app.database import get_db
 from app.schemas import DashboardStats
+from app.time_utils import utc_iso, utc_now
 
 router = APIRouter(tags=["dashboard"])
 
 
 @router.get("/dashboard", response_model=DashboardStats)
 def dashboard(db: Session = Depends(get_db)):
-    total_services = db.query(models.Service).count()
-    healthy = db.query(models.Service).filter(models.Service.status == "healthy").count()
-    warning = db.query(models.Service).filter(models.Service.status == "warning").count()
-    critical = db.query(models.Service).filter(models.Service.status == "critical").count()
-
-    active_incidents = (
-        db.query(models.Incident).filter(models.Incident.status == "open").count()
+    service_counts = dict(
+        db.query(models.Service.status, func.count(models.Service.id))
+        .group_by(models.Service.status)
+        .all()
     )
+    total_services = sum(service_counts.values())
+    healthy = service_counts.get("healthy", 0)
+    warning = service_counts.get("warning", 0)
+    critical = service_counts.get("critical", 0)
+
+    active_filter = models.Incident.status.in_(("open", "acknowledged"))
+    active_incidents = db.query(models.Incident).filter(active_filter).count()
 
     sev_rows = (
         db.query(models.Incident.severity, func.count(models.Incident.id))
+        .filter(active_filter)
         .group_by(models.Incident.severity)
         .all()
     )
@@ -48,7 +54,7 @@ def dashboard(db: Session = Depends(get_db)):
             "id": r.id,
             "service": r.service,
             "environment": r.environment,
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "timestamp": utc_iso(r.timestamp) if r.timestamp else None,
             "level": r.level,
             "message": r.message,
         }
@@ -56,21 +62,26 @@ def dashboard(db: Session = Depends(get_db)):
     ]
 
     # Error trend: count of ERROR/FATAL per hour over last 24 hours (buckets)
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
-    now = datetime.utcnow()
-    buckets: List[Dict] = []
+    now = utc_now()
+    first_bucket = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=23)
+    error_rows = (
+        db.query(models.LogEvent.timestamp)
+        .filter(
+            models.LogEvent.level.in_(["ERROR", "FATAL"]),
+            models.LogEvent.timestamp >= first_bucket,
+        )
+        .all()
+    )
+    counts_by_hour: dict = {}
+    for (timestamp,) in error_rows:
+        hour = timestamp.replace(minute=0, second=0, microsecond=0)
+        counts_by_hour[hour] = counts_by_hour.get(hour, 0) + 1
+    buckets: list[dict] = []
     for i in range(23, -1, -1):
         start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=i)
-        end = start + timedelta(hours=1)
-        cnt = (
-            db.query(models.LogEvent)
-            .filter(models.LogEvent.level.in_(["ERROR", "FATAL"]))
-            .filter(models.LogEvent.timestamp >= start)
-            .filter(models.LogEvent.timestamp < end)
-            .count()
-        )
-        buckets.append({"ts": start.isoformat(), "count": cnt})
+        buckets.append({"ts": utc_iso(start), "count": counts_by_hour.get(start, 0)})
 
     service_health = [
         {

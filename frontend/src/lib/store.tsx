@@ -1,5 +1,23 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
-import { apiService, DashboardStats, Incident, Service, LogEvent } from "./api";
+import {
+  createContext,
+  ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  apiService,
+  DashboardStats,
+  Incident,
+  IngestResponse,
+  LogEvent,
+  RawLogEvent,
+  Service,
+  SimulationResponse,
+} from "./api";
 
 interface AppState {
   services: Service[];
@@ -7,16 +25,32 @@ interface AppState {
   logs: LogEvent[];
   dashboard: DashboardStats | null;
   loading: Record<string, boolean>;
+  errors: Record<string, string | undefined>;
   theme: "dark" | "light";
-  setTheme: (t: "dark" | "light") => void;
+  setTheme: (theme: "dark" | "light") => void;
   refresh: () => Promise<void>;
   acknowledgeIncident: (id: number) => Promise<void>;
   resolveIncident: (id: number) => Promise<void>;
-  simulate: (seed?: number, total_events?: number) => Promise<any>;
-  ingestLogs: (events: any[]) => Promise<any>;
+  simulate: (seed?: number, totalEvents?: number) => Promise<SimulationResponse>;
+  ingestLogs: (events: RawLogEvent[]) => Promise<IngestResponse>;
+  ingestFile: (file: File) => Promise<IngestResponse>;
 }
 
 const AppContext = createContext<AppState | null>(null);
+
+function messageFrom(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return "An unexpected request error occurred.";
+}
+
+function storedTheme(): "dark" | "light" {
+  try {
+    const value = window.localStorage?.getItem?.("opsradar-theme");
+    return value === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [services, setServices] = useState<Service[]>([]);
@@ -24,140 +58,183 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
-  const [theme, setThemeState] = useState<"dark" | "light">("dark");
+  const [errors, setErrors] = useState<Record<string, string | undefined>>({});
+  const [theme, setThemeState] = useState<"dark" | "light">(storedTheme);
+  const initialLoadStarted = useRef(false);
 
-  const setLoadingState = useCallback((key: string, v: boolean) => {
-    setLoading((prev) => ({ ...prev, [key]: v }));
+  const setLoadingState = useCallback((key: string, value: boolean) => {
+    setLoading((previous) => ({ ...previous, [key]: value }));
   }, []);
-
-  const setTheme = useCallback((t: "dark" | "light") => {
-    setThemeState(t);
-    if (t === "dark") document.documentElement.classList.add("dark");
-    else document.documentElement.classList.remove("dark");
-    localStorage.setItem("opsradar-theme", t);
+  const setErrorState = useCallback((key: string, value?: string) => {
+    setErrors((previous) => ({ ...previous, [key]: value }));
   }, []);
+  const setTheme = useCallback((value: "dark" | "light") => setThemeState(value), []);
 
   useEffect(() => {
-    const saved = localStorage.getItem("opsradar-theme") as "dark" | "light" | null;
-    setTheme(saved || "dark");
-  }, [setTheme]);
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.classList.toggle("light", theme === "light");
+    try {
+      window.localStorage?.setItem?.("opsradar-theme", theme);
+    } catch {
+      // Storage can be unavailable in privacy modes; in-memory theming still works.
+    }
+  }, [theme]);
 
   const fetchServices = useCallback(async () => {
     setLoadingState("services", true);
+    setErrorState("services");
     try {
-      const r = await apiService.services();
-      setServices(r.data);
+      setServices((await apiService.services()).data);
+    } catch (error) {
+      setErrorState("services", messageFrom(error));
+      throw error;
     } finally {
       setLoadingState("services", false);
     }
-  }, [setLoadingState]);
+  }, [setErrorState, setLoadingState]);
 
   const fetchDashboard = useCallback(async () => {
     setLoadingState("dashboard", true);
+    setErrorState("dashboard");
     try {
-      const r = await apiService.dashboard();
-      setDashboard(r.data);
+      setDashboard((await apiService.dashboard()).data);
+    } catch (error) {
+      setErrorState("dashboard", messageFrom(error));
+      throw error;
     } finally {
       setLoadingState("dashboard", false);
     }
-  }, [setLoadingState]);
+  }, [setErrorState, setLoadingState]);
 
   const fetchIncidents = useCallback(async () => {
     setLoadingState("incidents", true);
+    setErrorState("incidents");
     try {
-      const r = await apiService.incidents();
-      setIncidents(r.data);
+      setIncidents((await apiService.incidents()).data);
+    } catch (error) {
+      setErrorState("incidents", messageFrom(error));
+      throw error;
     } finally {
       setLoadingState("incidents", false);
     }
-  }, [setLoadingState]);
+  }, [setErrorState, setLoadingState]);
 
   const fetchLogs = useCallback(async () => {
     setLoadingState("logs", true);
+    setErrorState("logs");
     try {
-      const r = await apiService.logs({ limit: 100 });
-      setLogs(r.data);
+      setLogs((await apiService.logs({ limit: 100 })).data);
+    } catch (error) {
+      setErrorState("logs", messageFrom(error));
+      throw error;
     } finally {
       setLoadingState("logs", false);
     }
-  }, [setLoadingState]);
+  }, [setErrorState, setLoadingState]);
 
   const refresh = useCallback(async () => {
-    await Promise.all([fetchServices(), fetchDashboard(), fetchIncidents(), fetchLogs()]);
+    await Promise.allSettled([
+      fetchServices(),
+      fetchDashboard(),
+      fetchIncidents(),
+      fetchLogs(),
+    ]);
   }, [fetchServices, fetchDashboard, fetchIncidents, fetchLogs]);
 
-  const acknowledgeIncident = useCallback(async (id: number) => {
-    const r = await apiService.updateIncident(id, "acknowledged");
-    setIncidents((prev) => {
-      const idx = prev.findIndex((x) => x.id === id);
-      if (idx < 0) return prev;
-      const next = [...prev];
-      next[idx] = r.data;
-      return next;
-    });
-  }, []);
+  const updateIncident = useCallback(
+    async (id: number, status: "acknowledged" | "resolved") => {
+      const key = `incident-${id}`;
+      setLoadingState(key, true);
+      setErrorState("mutation");
+      try {
+        await apiService.updateIncident(id, status);
+        await refresh();
+      } catch (error) {
+        setErrorState("mutation", messageFrom(error));
+        throw error;
+      } finally {
+        setLoadingState(key, false);
+      }
+    },
+    [refresh, setErrorState, setLoadingState]
+  );
 
-  const resolveIncident = useCallback(async (id: number) => {
-    const r = await apiService.updateIncident(id, "resolved");
-    setIncidents((prev) => {
-      const idx = prev.findIndex((x) => x.id === id);
-      if (idx < 0) return prev;
-      const next = [...prev];
-      next[idx] = r.data;
-      return next;
-    });
-  }, []);
+  const acknowledgeIncident = useCallback(
+    (id: number) => updateIncident(id, "acknowledged"),
+    [updateIncident]
+  );
+  const resolveIncident = useCallback(
+    (id: number) => updateIncident(id, "resolved"),
+    [updateIncident]
+  );
 
-  const simulate = useCallback(async (seed?: number, total_events?: number) => {
-    setLoadingState("simulate", true);
-    try {
-      const r = await apiService.simulate(seed, total_events);
-      await refresh();
-      return r.data;
-    } finally {
-      setLoadingState("simulate", false);
-    }
-  }, [setLoadingState, refresh]);
+  const simulate = useCallback(
+    async (seed?: number, totalEvents?: number) => {
+      setLoadingState("simulate", true);
+      setErrorState("mutation");
+      try {
+        const response = await apiService.simulate(seed, totalEvents);
+        await refresh();
+        return response.data;
+      } catch (error) {
+        setErrorState("mutation", messageFrom(error));
+        throw error;
+      } finally {
+        setLoadingState("simulate", false);
+      }
+    },
+    [refresh, setErrorState, setLoadingState]
+  );
 
-  const ingestLogs = useCallback(async (events: any[]) => {
-    setLoadingState("ingest", true);
-    try {
-      const r = await apiService.ingestLogs(events);
-      await refresh();
-      return r.data;
-    } finally {
-      setLoadingState("ingest", false);
-    }
-  }, [setLoadingState, refresh]);
+  const runIngestion = useCallback(
+    async (request: () => ReturnType<typeof apiService.ingestLogs>) => {
+      setLoadingState("ingest", true);
+      setErrorState("mutation");
+      try {
+        const response = await request();
+        await refresh();
+        return response.data;
+      } catch (error) {
+        setErrorState("mutation", messageFrom(error));
+        throw error;
+      } finally {
+        setLoadingState("ingest", false);
+      }
+    },
+    [refresh, setErrorState, setLoadingState]
+  );
+
+  const ingestLogs = useCallback(
+    (events: RawLogEvent[]) => runIngestion(() => apiService.ingestLogs(events)),
+    [runIngestion]
+  );
+  const ingestFile = useCallback(
+    (file: File) => runIngestion(() => apiService.ingestFile(file)),
+    [runIngestion]
+  );
 
   useEffect(() => {
-    refresh();
+    if (initialLoadStarted.current) return;
+    initialLoadStarted.current = true;
+    void refresh();
   }, [refresh]);
 
-  return (
-    <AppContext.Provider
-      value={{
-        services,
-        incidents,
-        logs,
-        dashboard,
-        loading,
-        theme,
-        setTheme,
-        refresh,
-        acknowledgeIncident,
-        resolveIncident,
-        simulate,
-        ingestLogs,
-      }}
-    >
-      {children}
-    </AppContext.Provider>
+  const value = useMemo(
+    () => ({
+      services, incidents, logs, dashboard, loading, errors, theme, setTheme, refresh,
+      acknowledgeIncident, resolveIncident, simulate, ingestLogs, ingestFile,
+    }),
+    [
+      services, incidents, logs, dashboard, loading, errors, theme, setTheme, refresh,
+      acknowledgeIncident, resolveIncident, simulate, ingestLogs, ingestFile,
+    ]
   );
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 export function useApp() {
-  const ctx = useContext(AppContext);
-  if (!ctx) throw new Error("useApp must be used within AppProvider");
-  return ctx;
+  const context = useContext(AppContext);
+  if (!context) throw new Error("useApp must be used within AppProvider");
+  return context;
 }

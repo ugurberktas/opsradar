@@ -1,34 +1,32 @@
 """SQLAlchemy models for OpsRadar."""
 
-from datetime import datetime
-from typing import Optional
-
 from sqlalchemy import (
+    Boolean,
     Column,
-    Integer,
-    String,
     DateTime,
     Float,
-    Text,
-    Boolean,
     ForeignKey,
     Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import relationship
 
 from app.database import Base
-
-UTC = None  # placeholder; we use naive UTC datetimes consistently
+from app.time_utils import utc_now
 
 
 class Service(Base):
     __tablename__ = "services"
+    __table_args__ = (UniqueConstraint("name", "environment", name="uq_service_environment"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String(100), index=True, nullable=False)
     environment = Column(String, nullable=False, default="production")
     status = Column(String, nullable=False, default="healthy")  # healthy | warning | critical
-    last_heartbeat = Column(DateTime, default=datetime.utcnow)
+    last_heartbeat = Column(DateTime, default=utc_now)
 
     logs = relationship("LogEvent", back_populates="service_rel", cascade="all, delete-orphan")
     incidents = relationship("Incident", back_populates="service_rel", cascade="all, delete-orphan")
@@ -72,7 +70,7 @@ class Incident(Base):
     suggested_remediation = Column(Text, nullable=True)  # JSON string
     acknowledged_at = Column(DateTime, nullable=True)
     resolved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     service_rel = relationship("Service", back_populates="incidents")
     events = relationship("IncidentEvent", back_populates="incident", cascade="all, delete-orphan")
@@ -80,6 +78,9 @@ class Incident(Base):
 
 class IncidentEvent(Base):
     __tablename__ = "incident_events"
+    __table_args__ = (
+        UniqueConstraint("incident_id", "log_event_id", name="uq_incident_log_event"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=False, index=True)

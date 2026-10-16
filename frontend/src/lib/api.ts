@@ -4,6 +4,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 const api = axios.create({
   baseURL: API_BASE,
+  timeout: 10_000,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -70,24 +71,31 @@ export interface SimulationResponse {
   scenario: string;
 }
 
+export type RawLogEvent = Record<string, unknown>;
+
+export interface IngestResponse {
+  ingested: number;
+  skipped: number;
+  incidents_created: number;
+}
+
 export const apiService = {
   health: () => api.get("/api/health"),
   services: () => api.get<Service[]>("/api/services"),
   dashboard: () => api.get<DashboardStats>("/api/dashboard"),
   logs: (params?: { service?: string; level?: string; search?: string; limit?: number }) =>
     api.get<LogEvent[]>("/api/logs", { params }),
-  ingestLogs: (events: any[]) => api.post("/api/logs/ingest", { events }),
+  ingestLogs: (events: RawLogEvent[]) =>
+    api.post<IngestResponse>("/api/logs/ingest", { events }),
   ingestFile: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return api.post("/api/logs/ingest/file", form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
+    return api.post<IngestResponse>("/api/logs/ingest/file", form);
   },
   incidents: (params?: { status?: string; severity?: string; service?: string }) =>
     api.get<Incident[]>("/api/incidents", { params }),
   incident: (id: number) => api.get<Incident>(`/api/incidents/${id}`),
-  updateIncident: (id: number, status: string) =>
+  updateIncident: (id: number, status: "acknowledged" | "resolved") =>
     api.patch<Incident>(`/api/incidents/${id}`, { status }),
   simulate: (seed?: number, total_events?: number) =>
     api.post<SimulationResponse>("/api/simulate", {}, { params: { seed, total_events } }),

@@ -6,7 +6,7 @@ external LLM provider in the future. It is intentionally NOT connected to any
 API key or network call in the default build.
 """
 
-from typing import List, Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -14,9 +14,9 @@ class AIRootCauseProvider(Protocol):
     def suggest_root_cause(
         self,
         incident_title: str,
-        evidence: List[str],
+        evidence: list[str],
         context: dict,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Return a speculative root-cause string or None if unavailable."""
         ...
 
@@ -27,9 +27,9 @@ class DisabledAIProvider:
     def suggest_root_cause(
         self,
         incident_title: str,
-        evidence: List[str],
+        evidence: list[str],
         context: dict,
-    ) -> Optional[str]:
+    ) -> str | None:
         return None
 
 

@@ -1,7 +1,6 @@
-import { useEffect } from "react";
 import { useApp } from "../lib/store";
 import { StatCard } from "../components/ui";
-import { LayoutDashboard, AlertTriangle, Minus } from "lucide-react";
+import { LayoutDashboard, AlertTriangle, RefreshCw } from "lucide-react";
 import { ErrorTrend } from "../components/Charts/ErrorTrend";
 import { SeverityDonut } from "../components/Charts/SeverityDonut";
 import { ServiceHealth } from "../components/Charts/ServiceHealth";
@@ -10,11 +9,7 @@ import { formatRelativeTime } from "../lib/utils";
 export function Dashboard() {
   const { dashboard, loading, refresh } = useApp();
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  if (!dashboard || loading.dashboard) {
+  if (!dashboard) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex flex-col items-center gap-2 animate-pulse">
@@ -37,10 +32,11 @@ export function Dashboard() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={refresh}
+            onClick={() => void refresh()}
+            disabled={loading.dashboard}
             className="flex items-center gap-2 px-3 py-2 rounded-md border bg-secondary text-secondary-foreground hover:bg-secondary/80 text-sm"
           >
-            <Minus className="w-4 h-4" /> Refresh
+            <RefreshCw className={`w-4 h-4 ${loading.dashboard ? "animate-spin" : ""}`} /> Refresh
           </button>
         </div>
       </div>

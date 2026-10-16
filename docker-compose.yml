@@ -1,12 +1,11 @@
-version: "3.8"
-
 services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "${OPSRADAR_BACKEND_PORT:-8000}:8000"
     environment:
-      - OPSRADAR_DATABASE_URL=sqlite:////data/opsradar.db
+      OPSRADAR_DATABASE_URL: sqlite:////data/opsradar.db
+      OPSRADAR_SEED_DEMO: "true"
     volumes:
       - opsradar-data:/data
     restart: unless-stopped
@@ -15,16 +14,15 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
 
   frontend:
     build: ./frontend
     ports:
-      - "5173:80"
+      - "${OPSRADAR_FRONTEND_PORT:-5173}:80"
     depends_on:
       backend:
         condition: service_healthy
-    environment:
-      - VITE_API_BASE=http://127.0.0.1:8000
     restart: unless-stopped
 
 volumes:

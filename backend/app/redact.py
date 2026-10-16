@@ -1,22 +1,22 @@
 """Sensitive-data redaction for log messages before storage/display.
 
 Patterns redact passwords, tokens, API keys, secrets, and Bearer auth headers.
-Never stores real credentials.
+This is a best-effort safeguard, not a complete data-loss-prevention system.
 """
 
 import re
-from typing import Tuple
 
 # (compiled_regex, replacement)
-SENSITIVE_PATTERNS: Tuple[Tuple[re.Pattern, str], ...] = (
+SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # key: value forms
     (
         re.compile(
-            r"(password|passwd|pwd|secret|api[_-]?key|api[_-]?secret|access[_-]?token|"
-            r"refresh[_-]?token|client[_-]?secret|private[_-]?key|db[_-]?password|\btoken\b)\s*[:=]\s*[\"']?([^\"'\s,}]+)",
+            r"([\"']?(?:password|passwd|pwd|secret|api[_-]?key|api[_-]?secret|"
+            r"access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|"
+            r"db[_-]?password|token)[\"']?\s*[:=]\s*)[\"']?([^\"'\s,&}]+)",
             re.IGNORECASE,
         ),
-        r"\1: ***REDACTED***",
+        r"\1***REDACTED***",
     ),
     # Authorization: Bearer <token>
     (
@@ -33,6 +33,13 @@ SENSITIVE_PATTERNS: Tuple[Tuple[re.Pattern, str], ...] = (
         re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
         "***REDACTED***",
     ),
+    # Credentials embedded in URLs.
+    (
+        re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s:/]+:)[^\s/@]+(@)", re.IGNORECASE),
+        r"\1***REDACTED***\2",
+    ),
+    # Common cloud access-key identifier. The corresponding secret is caught above.
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***REDACTED***"),
 )
 
 

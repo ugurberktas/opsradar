@@ -1,6 +1,6 @@
 """Tests for JSONL log parsing and normalization."""
 
-from app.parsers import parse_jsonl, normalize_event
+from app.parsers import normalize_event, parse_jsonl
 
 
 def test_parse_jsonl_valid():
@@ -17,6 +17,12 @@ def test_parse_jsonl_skips_blank_and_malformed():
     assert len(events) == 3  # 2 valid + 1 malformed synthetic
     assert events[1]["_parse_error"] is True
     assert "Malformed log line" in events[1]["message"]
+
+
+def test_parse_jsonl_marks_non_object_values_as_invalid():
+    events = parse_jsonl('42\n["not", "an", "event"]\n')
+    assert len(events) == 2
+    assert all(event["_parse_error"] is True for event in events)
 
 
 def test_normalize_event_field_aliases():

@@ -6,8 +6,10 @@ signatures, time-window correlation, and severity assignment.
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import timedelta
+from typing import Any
+
+from app.time_utils import utc_now
 
 
 @dataclass
@@ -15,21 +17,22 @@ class DetectionRule:
     name: str
     display_name: str
     severity: str  # INFO | WARNING | CRITICAL
-    patterns: List[str]  # compiled regexes matched against the message
+    patterns: list[str]  # compiled regexes matched against the message
     confidence: float
     root_cause_template: str
-    investigation_steps: List[str]
-    remediation_actions: List[str]
+    investigation_steps: list[str]
+    remediation_actions: list[str]
     root_cause_confidence: str = "speculative"  # speculative | likely | confirmed
+    min_events: int = 1
 
 
 # All detection rules. Order matters for first-match assignment.
-DETECTION_RULES: List[DetectionRule] = [
+DETECTION_RULES: list[DetectionRule] = [
     DetectionRule(
         name="k8s_crash_loop",
         display_name="Kubernetes CrashLoopBackOff",
         severity="CRITICAL",
-        patterns=[r"CrashLoopBackOff", r"Back.?off.?restarting.?failed.?container", r"OOMKilled"],
+        patterns=[r"CrashLoopBackOff", r"Back.?off.?restarting.?failed.?container"],
         confidence=0.9,
         root_cause_template="Pod {service} is stuck in a crash loop ({pattern}). Container repeatedly exits non-zero.",
         investigation_steps=[
@@ -112,6 +115,7 @@ DETECTION_RULES: List[DetectionRule] = [
             "Page on-call if the spike persists >5 minutes",
         ],
         root_cause_confidence="speculative",
+        min_events=3,
     ),
     DetectionRule(
         name="connection_timeout",
@@ -131,6 +135,7 @@ DETECTION_RULES: List[DetectionRule] = [
             "Enable keep-alive / connection pooling",
         ],
         root_cause_confidence="speculative",
+        min_events=2,
     ),
     DetectionRule(
         name="oom_killed",
@@ -154,7 +159,7 @@ DETECTION_RULES: List[DetectionRule] = [
 ]
 
 
-def detect_signature(message: str) -> Optional[DetectionRule]:
+def detect_signature(message: str) -> DetectionRule | None:
     """Return the first matching detection rule, or None."""
     for rule in DETECTION_RULES:
         for pat in rule.patterns:
@@ -170,39 +175,34 @@ def signature_for(rule: DetectionRule, service: str, environment: str) -> str:
 
 @dataclass
 class DetectionResult:
-    incidents: List[Dict[str, Any]]       # new incidents created
-    linked_logs: List[int]                # log event ids that were linked
+    incidents: list[dict[str, Any]]       # new incidents created
+    linked_logs: list[int]                # log event ids that were linked
     total_events_processed: int
 
 
 def detect_and_correlate(
     db,
-    events: List[Dict[str, Any]],
+    events: list[dict[str, Any]],
     time_window_minutes: int = 15,
 ) -> DetectionResult:
     """Run detection over a list of normalized log-event dicts.
 
-    Groups related errors into incidents keyed by signature. Avoids
-    duplicate incidents for identical signatures that already exist
-    in open status.
+    Groups related errors into time-bounded clusters keyed by signature. Open
+    and acknowledged incidents are considered active. Callers should include a
+    ``_log_event_id`` on each event so links are unambiguous and idempotent.
     """
     from app import models
 
-    new_incidents: List[Dict[str, Any]] = []
-    linked_log_ids: List[int] = []
-    now = datetime.utcnow()
-    window_start = now - timedelta(minutes=time_window_minutes)
-
-    # Load existing open incidents to avoid duplicates
-    existing = (
-        db.query(models.Incident)
-        .filter(models.Incident.status == "open")
-        .all()
-    )
-    existing_signatures = {inc.signature for inc in existing}
+    new_incidents: list[dict[str, Any]] = []
+    linked_log_ids: list[int] = []
+    affected_service_ids: set[int] = set()
+    if time_window_minutes <= 0:
+        raise ValueError("time_window_minutes must be positive")
+    now = utc_now()
+    window = timedelta(minutes=time_window_minutes)
 
     # Group candidate events by signature
-    groups: Dict[str, List[Dict[str, Any]]] = {}
+    groups: dict[str, list[dict[str, Any]]] = {}
     for ev in events:
         level = (ev.get("level") or "INFO").upper()
         if level not in ("WARN", "WARNING", "ERROR", "FATAL"):
@@ -213,92 +213,203 @@ def detect_and_correlate(
         sig = signature_for(rule, ev.get("service", "unknown"), ev.get("environment", "production"))
         groups.setdefault(sig, []).append({**ev, "_rule": rule})
 
-    for sig, group in groups.items():
-        rule = group[0]["_rule"]
-        service = group[0].get("service", "unknown")
-        environment = group[0].get("environment", "production")
-        timestamps = [g.get("timestamp") for g in group if g.get("timestamp")]
-        first_seen = min(timestamps) if timestamps else now
-        last_seen = max(timestamps) if timestamps else now
+    signatures = list(groups)
+    existing = (
+        db.query(models.Incident)
+        .filter(
+            models.Incident.signature.in_(signatures),
+            models.Incident.status.in_(("open", "acknowledged")),
+        )
+        .order_by(models.Incident.last_seen.desc())
+        .all()
+        if signatures
+        else []
+    )
+    existing_by_signature: dict[str, list[Any]] = {}
+    for incident in existing:
+        existing_by_signature.setdefault(incident.signature, []).append(incident)
 
-        # Deduplicate: if an open incident with this signature exists, just link logs
-        if sig in existing_signatures:
-            inc = next(i for i in existing if i.signature == sig)
-            inc.event_count = (inc.event_count or 0) + len(group)
-            inc.last_seen = last_seen
-            db.add(inc)
-            # link log events
-            for g in group:
-                le = (
-                    db.query(models.LogEvent)
+    for sig, signature_group in groups.items():
+        ordered = sorted(signature_group, key=lambda item: item.get("timestamp") or now)
+        clusters: list[list[dict[str, Any]]] = []
+        for event in ordered:
+            event_ts = event.get("timestamp") or now
+            if not clusters:
+                clusters.append([event])
+                continue
+            previous_ts = clusters[-1][-1].get("timestamp") or now
+            if event_ts - previous_ts > window:
+                clusters.append([event])
+            else:
+                clusters[-1].append(event)
+
+        for group in clusters:
+            rule = group[0]["_rule"]
+            service = group[0].get("service", "unknown")
+            environment = group[0].get("environment", "production")
+            timestamps = [g.get("timestamp") for g in group if g.get("timestamp")]
+            first_seen = min(timestamps) if timestamps else now
+            last_seen = max(timestamps) if timestamps else now
+            candidates = existing_by_signature.get(sig, [])
+            incident = next(
+                (
+                    item
+                    for item in candidates
+                    if item.last_seen >= first_seen - window
+                    and item.first_seen <= last_seen + window
+                ),
+                None,
+            )
+
+            log_ids = list(dict.fromkeys(g.get("_log_event_id") for g in group if g.get("_log_event_id")))
+            if not log_ids and timestamps:
+                # Compatibility for direct engine callers. Ingestion supplies IDs,
+                # which is the preferred unambiguous and query-efficient path.
+                log_ids = [
+                    row[0]
+                    for row in db.query(models.LogEvent.id)
                     .filter(
-                        models.LogEvent.service == g.get("service"),
-                        models.LogEvent.timestamp == g.get("timestamp"),
-                        models.LogEvent.message == g.get("message"),
+                        models.LogEvent.service == service,
+                        models.LogEvent.environment == environment,
+                        models.LogEvent.timestamp.in_(timestamps),
+                    )
+                    .all()
+                ]
+            if incident:
+                linked_already = {
+                    row[0]
+                    for row in db.query(models.IncidentEvent.log_event_id)
+                    .filter(
+                        models.IncidentEvent.incident_id == incident.id,
+                        models.IncidentEvent.log_event_id.in_(log_ids),
+                    )
+                    .all()
+                } if log_ids else set()
+                new_log_ids = [log_id for log_id in log_ids if log_id not in linked_already]
+                for log_id in new_log_ids:
+                    db.add(models.IncidentEvent(incident_id=incident.id, log_event_id=log_id))
+                if new_log_ids:
+                    incident.event_count = (incident.event_count or 0) + len(new_log_ids)
+                    incident.first_seen = min(incident.first_seen, first_seen)
+                    incident.last_seen = max(incident.last_seen, last_seen)
+                    linked_log_ids.extend(new_log_ids)
+                continue
+
+            if len(log_ids) < rule.min_events:
+                unlinked_evidence = (
+                    db.query(models.LogEvent)
+                    .outerjoin(
+                        models.IncidentEvent,
+                        models.IncidentEvent.log_event_id == models.LogEvent.id,
+                    )
+                    .filter(
+                        models.IncidentEvent.id.is_(None),
+                        models.LogEvent.service == service,
+                        models.LogEvent.environment == environment,
+                        models.LogEvent.level.in_(("WARN", "ERROR", "FATAL")),
+                        models.LogEvent.timestamp >= first_seen - window,
+                        models.LogEvent.timestamp <= last_seen + window,
+                    )
+                    .order_by(models.LogEvent.timestamp.desc())
+                    .limit(1_000)
+                    .all()
+                )
+                matching_evidence = [
+                    log
+                    for log in unlinked_evidence
+                    if (matched_rule := detect_signature(log.message))
+                    and signature_for(matched_rule, service, environment) == sig
+                ]
+                log_ids = list(dict.fromkeys([*log_ids, *(log.id for log in matching_evidence)]))
+                if matching_evidence:
+                    evidence_timestamps = [log.timestamp for log in matching_evidence]
+                    first_seen = min(first_seen, *evidence_timestamps)
+                    last_seen = max(last_seen, *evidence_timestamps)
+
+            if len(log_ids) < rule.min_events:
+                continue
+
+            root_cause = rule.root_cause_template.format(
+                service=service, pattern=group[0].get("message", "")[:80]
+            )
+            service_id = group[0].get("_service_id")
+            if service_id is None:
+                service_row = (
+                    db.query(models.Service.id)
+                    .filter(
+                        models.Service.name == service,
+                        models.Service.environment == environment,
                     )
                     .first()
                 )
-                if le and not db.query(models.IncidentEvent).filter(
-                    models.IncidentEvent.incident_id == inc.id,
-                    models.IncidentEvent.log_event_id == le.id,
-                ).first():
-                    db.add(models.IncidentEvent(incident_id=inc.id, log_event_id=le.id))
-                    linked_log_ids.append(le.id)
-            continue
-
-        # Create new incident
-        title = f"{rule.display_name} — {service}"
-        root_cause = rule.root_cause_template.format(
-            service=service, pattern=group[0].get("message", "")[:80]
-        )
-        incident = models.Incident(
-            title=title,
-            severity=rule.severity,
-            status="open",
-            service=service,
-            environment=environment,
-            signature=sig,
-            first_seen=first_seen,
-            last_seen=last_seen,
-            event_count=len(group),
-            confidence=rule.confidence,
-            root_cause=root_cause,
-            root_cause_confidence=rule.root_cause_confidence,
-            suggested_steps="\n".join(rule.investigation_steps),
-            suggested_remediation="\n".join(rule.remediation_actions),
-        )
-        db.add(incident)
-        db.flush()  # get id
-        new_incidents.append(
-            {
-                "id": incident.id,
-                "title": incident.title,
-                "severity": incident.severity,
-                "service": incident.service,
-                "signature": incident.signature,
-                "event_count": incident.event_count,
-                "confidence": incident.confidence,
-                "root_cause": incident.root_cause,
-                "root_cause_confidence": incident.root_cause_confidence,
-            }
-        )
-        for g in group:
-            le = (
-                db.query(models.LogEvent)
-                .filter(
-                    models.LogEvent.service == g.get("service"),
-                    models.LogEvent.timestamp == g.get("timestamp"),
-                    models.LogEvent.message == g.get("message"),
-                )
-                .first()
+                service_id = service_row[0] if service_row else None
+            incident = models.Incident(
+                title=f"{rule.display_name} — {service}",
+                severity=rule.severity,
+                status="open",
+                service_id=service_id,
+                service=service,
+                environment=environment,
+                signature=sig,
+                first_seen=first_seen,
+                last_seen=last_seen,
+                event_count=len(log_ids) if log_ids else len(group),
+                confidence=rule.confidence,
+                root_cause=f"Potential cause: {root_cause}",
+                root_cause_confidence=rule.root_cause_confidence,
+                suggested_steps="\n".join(rule.investigation_steps),
+                suggested_remediation="\n".join(rule.remediation_actions),
             )
-            if le:
-                db.add(models.IncidentEvent(incident_id=incident.id, log_event_id=le.id))
-                linked_log_ids.append(le.id)
+            db.add(incident)
+            db.flush()
+            existing_by_signature.setdefault(sig, []).append(incident)
+            for log_id in log_ids:
+                db.add(models.IncidentEvent(incident_id=incident.id, log_event_id=log_id))
+            linked_log_ids.extend(log_ids)
+            new_incidents.append(
+                {
+                    "id": incident.id,
+                    "title": incident.title,
+                    "severity": incident.severity,
+                    "service": incident.service,
+                    "signature": incident.signature,
+                    "event_count": incident.event_count,
+                    "confidence": incident.confidence,
+                    "root_cause": incident.root_cause,
+                    "root_cause_confidence": incident.root_cause_confidence,
+                }
+            )
 
-    db.commit()
+            if incident.service_id:
+                affected_service_ids.add(incident.service_id)
+
+    for service_id in affected_service_ids:
+        recompute_service_status(db, service_id)
+    db.flush()
     return DetectionResult(
         incidents=new_incidents,
         linked_logs=linked_log_ids,
         total_events_processed=len(events),
     )
+
+
+def recompute_service_status(db, service_id: int | None) -> None:
+    """Set service health from its highest-severity active incident."""
+    if service_id is None:
+        return
+    from app import models
+
+    severities = {
+        row[0]
+        for row in db.query(models.Incident.severity)
+        .filter(
+            models.Incident.service_id == service_id,
+            models.Incident.status.in_(("open", "acknowledged")),
+        )
+        .all()
+    }
+    service = db.get(models.Service, service_id)
+    if service:
+        service.status = (
+            "critical" if "CRITICAL" in severities else "warning" if "WARNING" in severities else "healthy"
+        )
