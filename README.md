@@ -181,3 +181,4 @@ signature (`rule:service:environment`).
 - `make frontend-test` — runs vitest.
 - `npm run build` (frontend) — type-checks (`tsc`) and bundles with Vite.
 - `docker compose up --build` — full-stack, single-command deployment.
+# opsradar
